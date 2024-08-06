@@ -1,0 +1,10 @@
+# Ignore build output directories
+bin/
+obj/
+
+# Ignore Visual Studio files
+.vs/
+
+# Ignore sensitive configuration files
+config.json
+client_secret.json
