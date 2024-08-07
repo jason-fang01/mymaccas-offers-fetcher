@@ -1,10 +1,11 @@
-﻿using System.Text;
-
-namespace MyMaccasOffersFetcher
+﻿namespace MyMaccasOffersFetcher
 {
+    using System.Text;
+
     public class ConsoleAndFileWriter : TextWriter
     {
         private TextWriter console;
+
         private StreamWriter file;
 
         public ConsoleAndFileWriter(string path)

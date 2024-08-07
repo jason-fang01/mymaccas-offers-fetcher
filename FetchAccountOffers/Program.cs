@@ -4,6 +4,7 @@
     using Google.Apis.Auth.OAuth2;
     using Google.Apis.Gmail.v1;
     using Google.Apis.Services;
+    using Google.Apis.Util;
     using Google.Apis.Util.Store;
     using System.Text;
     using System.Text.Json;
@@ -14,6 +15,7 @@
         static async Task Main(string[] args)
         {
             string logFilename = GetTimestampedFilename();
+
             using (var writer = new ConsoleAndFileWriter(logFilename))
             {
                 Console.SetOut(writer);
@@ -23,15 +25,32 @@
                     Console.WriteLine($"Application started at {DateTime.Now}");
 
                     var config = ConfigLoader.LoadConfig();
+                    var credential = await GetOrRefreshCredential(config);
+                    var gmailService = new GmailService(new BaseClientService.Initializer()
+                    {
+                        HttpClientInitializer = credential,
+                        ApplicationName = "MyMaccasOffersFetcher",
+                    });
                     Console.WriteLine("Configuration loaded successfully.");
 
                     using var client = new HttpClient();
-                    var gmailService = GetGmailService(config);
-                    Console.WriteLine("Gmail service initialized.");
+                    Console.WriteLine("HTTP client initialized.");
 
-                    await ProcessEmails(config, client, gmailService);
+                    var results = await ProcessEmails(config, client);
 
                     Console.WriteLine("\nAll emails processed.");
+
+                    foreach (var (email, offers) in results)
+                    {
+                        if (offers != null)
+                        {
+                            DisplayOffersForAccount(email, offers);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"No offers found for {email}");
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -45,53 +64,58 @@
             }
         }
 
-        private static async Task ProcessEmails(Config config, HttpClient client, GmailService gmailService)
+        private static async Task<List<(string Email, OfferResponse Offers)>> ProcessEmails(Config config, HttpClient client)
         {
-            foreach (var email in config.EmailAliases)
+            var results = new List<(string Email, OfferResponse Offers)>();
+            foreach (var batch in config.EmailAliases.Chunk(5))
             {
-                Console.WriteLine($"\nProcessing email: {email}");
-
-                var accessToken = await GetAccessToken(client, config);
-                if (string.IsNullOrEmpty(accessToken))
-                {
-                    Console.WriteLine("No token retrieved. Skipping this email.");
-                    continue;
-                }
-
-                var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
-                Console.WriteLine("Magic link login request sent.");
-
-                Console.WriteLine("Waiting for magic link email...");
-                var code = await GetLatestMagicLinkCode(gmailService, email);
-                if (string.IsNullOrEmpty(code))
-                {
-                    Console.WriteLine($"Failed to get magic link code for {email}. Skipping.");
-                    continue;
-                }
-
-                var newAccessToken = await SigninWithCode(client, config, accessToken, code);
-                if (string.IsNullOrEmpty(newAccessToken))
-                {
-                    Console.WriteLine("Failed to sign in with the magic link code.");
-                    continue;
-                }
-
-                Console.WriteLine("Successfully signed in with magic link code.");
-
-                var offers = await FetchOffers(client, config, newAccessToken);
-                if (offers != null)
-                {
-                    DisplayOffersForAccount(email, offers);
-                }
-                else
-                {
-                    Console.WriteLine($"No offers found for {email}");
-                }
-
-                Console.WriteLine($"Finished processing email: {email}");
-
-                await Task.Delay(2000);
+                var batchTasks = batch.Select(email => ProcessSingleEmail(email, config, client));
+                var batchResults = await Task.WhenAll(batchTasks);
+                results.AddRange(batchResults);
+                await Task.Delay(8000);
             }
+            return results;
+        }
+
+        private static async Task<(string Email, OfferResponse Offers)> ProcessSingleEmail(string email, Config config, HttpClient clientFactory)
+        {
+            Console.WriteLine($"\nProcessing email: {email}");
+            var gmailService = GetGmailService(config);
+
+            using var client = new HttpClient();
+
+            var accessToken = await GetAccessToken(client, config);
+
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                Console.WriteLine($"No token retrieved for {email}. Skipping.");
+                return (email, (OfferResponse)null);
+            }
+
+            var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
+            Console.WriteLine($"Magic link login request sent for {email}.");
+
+            Console.WriteLine($"Waiting for magic link email for {email}...");
+            var code = await GetLatestMagicLinkCode(gmailService, email);
+            if (string.IsNullOrEmpty(code))
+            {
+                Console.WriteLine($"Failed to get magic link code for {email}. Skipping.");
+                return (email, (OfferResponse)null);
+            }
+
+            var newAccessToken = await SigninWithCode(client, config, accessToken, code, email);
+            if (string.IsNullOrEmpty(newAccessToken))
+            {
+                Console.WriteLine($"Failed to sign in with the magic link code for {email}.");
+                return (email, (OfferResponse)null);
+            }
+
+            Console.WriteLine($"Successfully signed in with magic link code for {email}.");
+
+            var offers = await FetchOffers(client, config, newAccessToken);
+            Console.WriteLine($"Finished processing email: {email}");
+
+            return (email, offers);
         }
 
         private static string GetTimestampedFilename()
@@ -109,21 +133,23 @@
             var url = config.AuthTokenUrl;
             var content = new StringContent("grantType=client_credentials", Encoding.UTF8, "application/x-www-form-urlencoded");
 
-            client.DefaultRequestHeaders.Clear();
-            client.DefaultRequestHeaders.Add("mcd-clientid", config.McdClientId);
-            client.DefaultRequestHeaders.Add("authorization", $"Basic {config.McdBasicAuth}");
-            client.DefaultRequestHeaders.Add("mcd-clientsecret", config.McdClientSecret);
-            client.DefaultRequestHeaders.Add("cache-control", "true");
-            client.DefaultRequestHeaders.Add("accept-charset", "UTF-8");
-            client.DefaultRequestHeaders.Add("user-agent", config.UserAgent);
-            client.DefaultRequestHeaders.Add("accept-language", "en-AU");
-            client.DefaultRequestHeaders.Add("mcd-sourceapp", config.McdSourceApp);
-            client.DefaultRequestHeaders.Add("mcd-uuid", "");
-            client.DefaultRequestHeaders.Add("mcd-marketid", config.McdMarketId);
+            var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Content = content;
+
+            request.Headers.Add("mcd-clientid", config.McdClientId);
+            request.Headers.Add("authorization", $"Basic {config.McdBasicAuth}");
+            request.Headers.Add("mcd-clientsecret", config.McdClientSecret);
+            request.Headers.Add("cache-control", "true");
+            request.Headers.Add("accept-charset", "UTF-8");
+            request.Headers.Add("user-agent", config.UserAgent);
+            request.Headers.Add("accept-language", "en-AU");
+            request.Headers.Add("mcd-sourceapp", config.McdSourceApp);
+            request.Headers.Add("mcd-uuid", "");
+            request.Headers.Add("mcd-marketid", config.McdMarketId);
 
             try
             {
-                var response = await client.PostAsync(url, content);
+                var response = await client.SendAsync(request);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -159,33 +185,38 @@
                 registrationType = "traditional"
             };
             var content = new StringContent(JsonSerializer.Serialize(data), Encoding.UTF8, "application/json");
+            var request = new HttpRequestMessage(HttpMethod.Post, url);
 
-            client.DefaultRequestHeaders.Clear();
-            client.DefaultRequestHeaders.Add("accept-charset", "UTF-8");
-            client.DefaultRequestHeaders.Add("accept-language", "en-AU");
-            client.DefaultRequestHeaders.Add("authorization", $"Bearer {token}");
-            client.DefaultRequestHeaders.Add("cache-control", "true");
-            client.DefaultRequestHeaders.Add("mcd-clientid", config.McdClientId);
-            client.DefaultRequestHeaders.Add("mcd-marketid", config.McdMarketId);
-            client.DefaultRequestHeaders.Add("mcd-sourceapp", config.McdSourceApp);
-            client.DefaultRequestHeaders.Add("mcd-uuid", Guid.NewGuid().ToString());
-            client.DefaultRequestHeaders.Add("user-agent", config.UserAgent);
+            request.Headers.Add("accept-charset", "UTF-8");
+            request.Headers.Add("accept-language", "en-AU");
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Add("cache-control", "true");
+            request.Headers.Add("mcd-clientid", config.McdClientId);
+            request.Headers.Add("mcd-marketid", config.McdMarketId);
+            request.Headers.Add("mcd-sourceapp", config.McdSourceApp);
+            request.Headers.Add("mcd-uuid", Guid.NewGuid().ToString());
+            request.Headers.Add("user-agent", config.UserAgent);
 
-            return await client.PostAsync(url, content);
+            request.Content = content;
+
+            return await client.SendAsync(request);
         }
+
+        private static readonly InMemoryDataStore _dataStore = new InMemoryDataStore();
+
+        private static readonly string CredentialPath = "token.json";
 
         private static GmailService GetGmailService(Config config)
         {
             UserCredential credential;
             using (var stream = new FileStream("client_secret.json", FileMode.Open, FileAccess.Read))
             {
-                string credPath = "token.json";
                 credential = GoogleWebAuthorizationBroker.AuthorizeAsync(
                     GoogleClientSecrets.Load(stream).Secrets,
                     config.GmailScopes,
                     "user",
                     CancellationToken.None,
-                    new FileDataStore(credPath, true)).Result;
+                    new FileDataStore(CredentialPath, true)).Result;
             }
 
             return new GmailService(new BaseClientService.Initializer()
@@ -194,12 +225,42 @@
                 ApplicationName = "MyMaccasOffersFetcher",
             });
         }
+        private static async Task<UserCredential> GetOrRefreshCredential(Config config)
+        {
+            try
+            {
+                UserCredential credential;
+                using (var stream = new FileStream("client_secret.json", FileMode.Open, FileAccess.Read))
+                {
+                    credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
+                        GoogleClientSecrets.Load(stream).Secrets,
+                        config.GmailScopes,
+                        "user",
+                        CancellationToken.None,
+                        new FileDataStore(CredentialPath, true));
+                }
+
+                if (credential.Token.IsExpired(SystemClock.Default))
+                {
+                    await credential.RefreshTokenAsync(CancellationToken.None);
+                }
+
+                return credential;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error refreshing token: {ex.Message}");
+                Console.WriteLine("Please re-authorize the application.");
+                File.Delete(CredentialPath);
+                return await GetOrRefreshCredential(config);
+            }
+        }
 
         private static async Task<string?> GetLatestMagicLinkCode(GmailService service, string alias)
         {
             try
             {
-                await Task.Delay(8000);
+                await Task.Delay(5000);
 
                 var query = $"from:accounts@au.mcdonalds.com to:{alias}";
                 var listRequest = service.Users.Messages.List("me");
@@ -257,7 +318,37 @@
             }
         }
 
-        private static async Task<string?> SigninWithCode(HttpClient client, Config config, string token, string code)
+        private static async Task<string?> SigninWithCode(HttpClient client, Config config, string token, string code, string email)
+        {
+            const int maxAttempts = 3;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    var result = await SigninWithCodeAttempt(client, config, token, code);
+                    if (!string.IsNullOrEmpty(result))
+                    {
+                        return result;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Attempt {attempt} failed for {email}: {ex.Message}");
+                }
+
+                if (attempt < maxAttempts)
+                {
+                    int delay = attempt * 2000;
+                    Console.WriteLine($"Retrying signin for {email} in {delay}ms...");
+                    await Task.Delay(delay);
+                }
+            }
+
+            Console.WriteLine($"Failed to sign in after {maxAttempts} attempts for {email}.");
+            return null;
+        }
+
+        private static async Task<string?> SigninWithCodeAttempt(HttpClient client, Config config, string token, string code)
         {
             var url = config.SigninWithCodeUrl;
             var payload = new
@@ -276,18 +367,20 @@
 
             var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
-            client.DefaultRequestHeaders.Clear();
-            client.DefaultRequestHeaders.Add("mcd-clientid", config.McdClientId);
-            client.DefaultRequestHeaders.Add("authorization", $"Bearer {token}");
-            client.DefaultRequestHeaders.Add("cache-control", "true");
-            client.DefaultRequestHeaders.Add("accept-charset", "UTF-8");
-            client.DefaultRequestHeaders.Add("user-agent", config.UserAgent);
-            client.DefaultRequestHeaders.Add("accept-language", "en-AU");
-            client.DefaultRequestHeaders.Add("mcd-sourceapp", config.McdSourceApp);
-            client.DefaultRequestHeaders.Add("mcd-uuid", Guid.NewGuid().ToString());
-            client.DefaultRequestHeaders.Add("mcd-marketid", config.McdMarketId);
+            var request = new HttpRequestMessage(HttpMethod.Put, url);
+            request.Content = content;
 
-            var response = await client.PutAsync(url, content);
+            request.Headers.Add("mcd-clientid", config.McdClientId);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Add("cache-control", "true");
+            request.Headers.Add("accept-charset", "UTF-8");
+            request.Headers.Add("user-agent", config.UserAgent);
+            request.Headers.Add("accept-language", "en-AU");
+            request.Headers.Add("mcd-sourceapp", config.McdSourceApp);
+            request.Headers.Add("mcd-uuid", Guid.NewGuid().ToString());
+            request.Headers.Add("mcd-marketid", config.McdMarketId);
+
+            var response = await client.SendAsync(request);
 
             if (response.IsSuccessStatusCode)
             {
@@ -307,14 +400,15 @@
             var url = config.OffersUrl;
             var queryString = $"distance={config.OfferDistance}&latitude={config.OfferLatitude}&longitude={config.OfferLongitude}&optOuts=&timezoneOffsetInMinutes={config.OfferTimezoneOffset}";
 
-            client.DefaultRequestHeaders.Clear();
+            var request = new HttpRequestMessage(HttpMethod.Get, $"{url}?{queryString}");
+
             foreach (var header in config.CommonHeaders)
             {
-                client.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
-            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
-            var response = await client.GetAsync($"{url}?{queryString}");
+            var response = await client.SendAsync(request);
 
             if (response.IsSuccessStatusCode)
             {
