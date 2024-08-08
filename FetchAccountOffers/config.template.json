@@ -1,61 +1,62 @@
 {
-  "AuthTokenUrl": "https://ap-prod.api.mcd.com/v1/security/auth/token",
-  "MagicLinkLoginUrl": "https://ap-prod.api.mcd.com/exp/v1/customer/identity/email",
-  "SigninWithCodeUrl": "https://ap-prod.api.mcd.com/exp/v1/customer/activateandsignin",
-  "OffersUrl": "https://ap-prod.api.mcd.com/exp/v2/offers",
-  "LoyaltyPointsUrl": "https://ap-prod.api.mcd.com/exp/v1/loyalty/customer/points",
-  "McdClientId": "<YOUR_MCD_CLIENT_ID>",
-  "McdClientSecret": "<YOUR_MCD_CLIENT_SECRET>",
-  "McdBasicAuth": "<YOUR_MCD_BASIC_AUTH>",
-  "McdSourceApp": "GMA",
-  "McdMarketId": "AU",
-  "UserAgent": "MCDSDK/34.0.5 (Android; 33; en-AU) GMA/8.7.2",
-  "GmailScopes": [ "https://www.googleapis.com/auth/gmail.readonly" ],
-  "OfferDistance": "8",
-  "OfferLatitude": "<YOUR_LATITUDE>",
-  "OfferLongitude": "<YOUR_LONGITUDE>",
-  "OfferTimezoneOffset": "600",
-  "DeviceId": "<YOUR_DEVICE_ID>",
-  "DeviceOs": "android",
-  "DeviceOsVersion": "13",
-  "EmailAliases": [
-    "<YOUR_EMAIL_ADDRESS>"
-  ],
-  "SigninPayloadTemplate": {
-    "activationLink": "",
-    "clientInfo": {
-      "device": {
-        "deviceUniqueId": "<YOUR_DEVICE_ID>",
-        "os": "android",
-        "osVersion": "13"
-      }
-    }
-  },
-  "SigninHeaders": {
-    "cookie": "<YOUR_COOKIE>",
-    "mcd-clientid": "<YOUR_MCD_CLIENT_ID>",
-    "cache-control": "true",
-    "accept-charset": "UTF-8",
-    "user-agent": "MCDSDK/34.0.5 (Android; 33; en-AU) GMA/8.7.2",
-    "accept-language": "en-AU",
-    "mcd-sourceapp": "GMA",
-    "mcd-uuid": "<GENERATE_NEW_UUID>",
-    "mcd-marketid": "AU",
-    "tracestate": "<YOUR_TRACESTATE>",
-    "newrelic": "<YOUR_NEWRELIC>",
-    "traceparent": "<YOUR_TRACEPARENT>",
-    "content-type": "application/json; charset=UTF-8",
-    "x-newrelic-id": "<YOUR_NEWRELIC_ID>"
-  },
-  "CommonHeaders": {
-    "mcd-clientid": "<YOUR_MCD_CLIENT_ID>",
-    "cache-control": "true",
-    "accept-charset": "UTF-8",
-    "user-agent": "MCDSDK/34.0.5 (Android; 33; en-AU) GMA/8.7.2",
-    "content-type": "application/json; charset=UTF-8",
-    "accept-language": "en-AU",
-    "mcd-sourceapp": "GMA",
-    "mcd-uuid": "<GENERATE_NEW_UUID>",
-    "mcd-marketid": "AU"
-  }
+	"AuthTokenUrl": "https://ap-prod.api.mcd.com/v1/security/auth/token",
+	"MagicLinkLoginUrl": "https://ap-prod.api.mcd.com/exp/v1/customer/identity/email",
+	"SigninWithCodeUrl": "https://ap-prod.api.mcd.com/exp/v1/customer/activateandsignin",
+	"OffersUrl": "https://ap-prod.api.mcd.com/exp/v2/offers",
+	"LoyaltyPointsUrl": "https://ap-prod.api.mcd.com/exp/v1/loyalty/customer/points",
+	"McdClientId": "<YOUR_MCD_CLIENT_ID>",
+	"McdClientSecret": "<YOUR_MCD_CLIENT_SECRET>",
+	"McdBasicAuth": "<YOUR_MCD_BASIC_AUTH>",
+	"McdSourceApp": "GMA",
+	"McdMarketId": "AU",
+	"UserAgent": "MCDSDK/34.0.5 (Android; 33; en-AU) GMA/8.7.2",
+	"GmailScopes": [
+		"https://www.googleapis.com/auth/gmail.readonly",
+		"https://www.googleapis.com/auth/gmail.modify"
+	],
+	"OfferDistance": "8",
+	"OfferLatitude": "<YOUR_LATITUDE>",
+	"OfferLongitude": "<YOUR_LONGITUDE>",
+	"OfferTimezoneOffset": "600",
+	"DeviceId": "<YOUR_DEVICE_ID>",
+	"DeviceOs": "android",
+	"DeviceOsVersion": "13",
+	"EmailAliases": ["<YOUR_EMAIL_ADDRESS>"],
+	"SigninPayloadTemplate": {
+		"activationLink": "",
+		"clientInfo": {
+			"device": {
+				"deviceUniqueId": "<YOUR_DEVICE_ID>",
+				"os": "android",
+				"osVersion": "13"
+			}
+		}
+	},
+	"SigninHeaders": {
+		"cookie": "<YOUR_COOKIE>",
+		"mcd-clientid": "<YOUR_MCD_CLIENT_ID>",
+		"cache-control": "true",
+		"accept-charset": "UTF-8",
+		"user-agent": "MCDSDK/34.0.5 (Android; 33; en-AU) GMA/8.7.2",
+		"accept-language": "en-AU",
+		"mcd-sourceapp": "GMA",
+		"mcd-uuid": "<GENERATE_NEW_UUID>",
+		"mcd-marketid": "AU",
+		"tracestate": "<YOUR_TRACESTATE>",
+		"newrelic": "<YOUR_NEWRELIC>",
+		"traceparent": "<YOUR_TRACEPARENT>",
+		"content-type": "application/json; charset=UTF-8",
+		"x-newrelic-id": "<YOUR_NEWRELIC_ID>"
+	},
+	"CommonHeaders": {
+		"mcd-clientid": "<YOUR_MCD_CLIENT_ID>",
+		"cache-control": "true",
+		"accept-charset": "UTF-8",
+		"user-agent": "MCDSDK/34.0.5 (Android; 33; en-AU) GMA/8.7.2",
+		"content-type": "application/json; charset=UTF-8",
+		"accept-language": "en-AU",
+		"mcd-sourceapp": "GMA",
+		"mcd-uuid": "<GENERATE_NEW_UUID>",
+		"mcd-marketid": "AU"
+	}
 }

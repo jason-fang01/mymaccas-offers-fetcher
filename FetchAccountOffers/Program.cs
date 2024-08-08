@@ -9,11 +9,19 @@
     using System.Text;
     using System.Text.Json;
     using System.Text.RegularExpressions;
+    using System.Diagnostics;
+    using Google.Apis.Gmail.v1.Data;
 
     class Program
     {
+        private const int MAGIC_LINK_WAIT_DELAY = 12000;
+        private const int SIGNIN_RETRY_BASE_DELAY = 2500;
+
         static async Task Main(string[] args)
         {
+            var stopwatch = Stopwatch.StartNew();
+            var failedAccounts = new HashSet<string>();
+
             string logFilename = GetTimestampedFilename();
 
             using (var writer = new ConsoleAndFileWriter(logFilename))
@@ -23,6 +31,10 @@
                 try
                 {
                     Console.WriteLine($"Application started at {DateTime.Now}");
+                    Console.WriteLine("\nCurrent delay settings:");
+                    Console.WriteLine($"MAGIC_LINK_WAIT_DELAY: {MAGIC_LINK_WAIT_DELAY}ms");
+                    Console.WriteLine($"SIGNIN_RETRY_BASE_DELAY: {SIGNIN_RETRY_BASE_DELAY}ms");
+                    Console.WriteLine();
 
                     var config = ConfigLoader.LoadConfig();
                     var credential = await GetOrRefreshCredential(config);
@@ -36,7 +48,7 @@
                     using var client = new HttpClient();
                     Console.WriteLine("HTTP client initialized.");
 
-                    var results = await ProcessEmails(config, client);
+                    var results = await ProcessEmails(config, client, failedAccounts);
 
                     Console.WriteLine("\nAll emails processed.");
 
@@ -59,63 +71,95 @@
                 }
                 finally
                 {
+                    stopwatch.Stop();
                     Console.WriteLine($"\nApplication ended at {DateTime.Now}");
+                    Console.WriteLine($"Total execution time: {stopwatch.Elapsed}");
+
+                    Console.WriteLine("\nSummary of failed accounts:");
+                    if (failedAccounts.Count > 0)
+                    {
+                        foreach (var account in failedAccounts)
+                        {
+                            Console.WriteLine(account);
+                        }
+                        Console.WriteLine($"\nTotal failed accounts: {failedAccounts.Count}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("All accounts processed successfully.");
+                    }
                 }
             }
         }
 
-        private static async Task<List<(string Email, OfferResponse Offers)>> ProcessEmails(Config config, HttpClient client)
+        private static async Task<List<(string Email, OfferResponse Offers)>> ProcessEmails(Config config, HttpClient client, HashSet<string> failedAccounts)
         {
             var results = new List<(string Email, OfferResponse Offers)>();
-            foreach (var batch in config.EmailAliases.Chunk(5))
+            var tasks = config.EmailAliases.Select(email => ProcessSingleEmail(email, config, client, failedAccounts)).ToList();
+
+            while (tasks.Any())
             {
-                var batchTasks = batch.Select(email => ProcessSingleEmail(email, config, client));
-                var batchResults = await Task.WhenAll(batchTasks);
-                results.AddRange(batchResults);
-                await Task.Delay(8000);
+                var completedTask = await Task.WhenAny(tasks);
+                tasks.Remove(completedTask);
+                results.Add(await completedTask);
             }
+
             return results;
         }
 
-        private static async Task<(string Email, OfferResponse Offers)> ProcessSingleEmail(string email, Config config, HttpClient clientFactory)
+        private static SemaphoreSlim apiSemaphore = new SemaphoreSlim(6, 6);
+
+        private static async Task<(string Email, OfferResponse Offers)> ProcessSingleEmail(string email, Config config, HttpClient clientFactory, HashSet<string> failedAccounts)
         {
-            Console.WriteLine($"\nProcessing email: {email}");
-            var gmailService = GetGmailService(config);
-
-            using var client = new HttpClient();
-
-            var accessToken = await GetAccessToken(client, config);
-
-            if (string.IsNullOrEmpty(accessToken))
+            await apiSemaphore.WaitAsync();
+            try
             {
-                Console.WriteLine($"No token retrieved for {email}. Skipping.");
-                return (email, (OfferResponse)null);
+                Console.WriteLine($"\nProcessing email: {email}");
+                var gmailService = GetGmailService(config);
+
+                using var client = new HttpClient();
+
+                var accessToken = await GetAccessToken(client, config);
+
+                if (string.IsNullOrEmpty(accessToken))
+                {
+                    Console.WriteLine($"No token retrieved for {email}. Skipping.");
+                    failedAccounts.Add(email);
+                    return (email, (OfferResponse)null);
+                }
+
+                var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
+                Console.WriteLine($"Magic link login request sent for {email}.");
+
+                Console.WriteLine($"Waiting for magic link email for {email}...");
+                var code = await GetLatestMagicLinkCode(gmailService, email);
+                if (string.IsNullOrEmpty(code))
+                {
+                    Console.WriteLine($"Failed to get magic link code for {email}. Skipping.");
+                    failedAccounts.Add(email);
+                    return (email, (OfferResponse)null);
+                }
+
+                var newAccessToken = await SigninWithCode(client, config, accessToken, code, email);
+                if (string.IsNullOrEmpty(newAccessToken))
+                {
+                    Console.WriteLine($"Failed to sign in with the magic link code for {email}.");
+                    failedAccounts.Add(email);
+                    return (email, (OfferResponse)null);
+                }
+
+                Console.WriteLine($"Successfully signed in with magic link code for {email}.");
+
+                var offers = await FetchOffers(client, config, newAccessToken);
+                Console.WriteLine($"Finished processing email: {email}");
+
+                return (email, offers);
             }
-
-            var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
-            Console.WriteLine($"Magic link login request sent for {email}.");
-
-            Console.WriteLine($"Waiting for magic link email for {email}...");
-            var code = await GetLatestMagicLinkCode(gmailService, email);
-            if (string.IsNullOrEmpty(code))
+            finally
             {
-                Console.WriteLine($"Failed to get magic link code for {email}. Skipping.");
-                return (email, (OfferResponse)null);
+                apiSemaphore.Release();
             }
-
-            var newAccessToken = await SigninWithCode(client, config, accessToken, code, email);
-            if (string.IsNullOrEmpty(newAccessToken))
-            {
-                Console.WriteLine($"Failed to sign in with the magic link code for {email}.");
-                return (email, (OfferResponse)null);
-            }
-
-            Console.WriteLine($"Successfully signed in with magic link code for {email}.");
-
-            var offers = await FetchOffers(client, config, newAccessToken);
-            Console.WriteLine($"Finished processing email: {email}");
-
-            return (email, offers);
+            
         }
 
         private static string GetTimestampedFilename()
@@ -260,12 +304,12 @@
         {
             try
             {
-                await Task.Delay(5000);
+                await Task.Delay(MAGIC_LINK_WAIT_DELAY);
 
                 var query = $"from:accounts@au.mcdonalds.com to:{alias}";
                 var listRequest = service.Users.Messages.List("me");
                 listRequest.Q = query;
-                listRequest.MaxResults = 1;
+                listRequest.MaxResults = 20;
 
                 var response = await listRequest.ExecuteAsync();
                 if (response.Messages == null || response.Messages.Count == 0)
@@ -274,71 +318,140 @@
                     return null;
                 }
 
-                var latestEmailId = response.Messages[0].Id;
-                var message = await service.Users.Messages.Get("me", latestEmailId).ExecuteAsync();
+                DateTime cutoffTime = DateTime.Now.AddMinutes(-10);
+                string? latestCode = null;
+                DateTime latestEmailTime = DateTime.MinValue;
+                string? latestEmailId = null;
 
-                if (message.Payload?.Body?.Data == null)
+                foreach (var messageData in response.Messages)
                 {
-                    Console.WriteLine("Email body is empty or null");
-                    return null;
+                    var message = await service.Users.Messages.Get("me", messageData.Id).ExecuteAsync();
+
+                    long timestamp = long.Parse(message.InternalDate.ToString());
+                    DateTime emailTime = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).LocalDateTime;
+
+                    if (emailTime < cutoffTime)
+                    {
+                        Console.WriteLine($"Skipping old email for {alias} from {emailTime}");
+                        continue;
+                    }
+
+                    if (emailTime > latestEmailTime)
+                    {
+                        string? code = ExtractMagicLinkCode(message);
+                        if (code != null)
+                        {
+                            latestCode = code;
+                            latestEmailTime = emailTime;
+                            latestEmailId = messageData.Id;
+                            Console.WriteLine($"Found newer magic link for {alias} from {latestEmailTime}");
+                        }
+                    }
                 }
 
-                string rawContent = message.Payload.Body.Data;
-                byte[] data;
-                try
+                if (latestCode != null && latestEmailId != null)
                 {
-                    data = Convert.FromBase64String(rawContent.Replace('-', '+').Replace('_', '/'));
-                }
-                catch (FormatException)
-                {
-                    Console.WriteLine("Failed to decode Base64 content. The content might not be Base64 encoded.");
-                    data = Encoding.UTF8.GetBytes(rawContent);
-                }
-
-                string decodedString = Encoding.UTF8.GetString(data);
-
-                var pattern = @"html%3Fml=([^=]+)";
-                var match = Regex.Match(decodedString, pattern);
-
-                if (match.Success)
-                {
-                    return match.Groups[1].Value;
+                    Console.WriteLine($"Using magic link for {alias} from {latestEmailTime}");
+                    await DeleteEmail(service, latestEmailId);
+                    return latestCode;
                 }
                 else
                 {
-                    Console.WriteLine("Magic link code not found in the email content");
+                    Console.WriteLine($"No valid recent magic link found for {alias}");
                     return null;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in GetLatestMagicLinkCode: {ex.Message}");
+                Console.WriteLine($"Error in GetLatestMagicLinkCode for {alias}: {ex.Message}");
                 Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                return null;
+            }
+        }
+
+        private static async Task DeleteEmail(GmailService service, string emailId)
+        {
+            try
+            {
+                await service.Users.Messages.Trash("me", emailId).ExecuteAsync();
+                Console.WriteLine($"Successfully deleted email with ID: {emailId}");
+            }
+            catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.Forbidden)
+            {
+                Console.WriteLine("Error: Insufficient permissions to delete the email. Please check Gmail API scopes.");
+                Console.WriteLine("Continuing without deleting the email.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Unexpected error deleting email: {ex.Message}");
+                Console.WriteLine("Continuing without deleting the email.");
+            }
+        }
+
+        private static string? ExtractMagicLinkCode(Message message)
+        {
+            if (message.Payload?.Body?.Data == null)
+            {
+                Console.WriteLine("Email body is empty or null");
+                return null;
+            }
+
+            string rawContent = message.Payload.Body.Data;
+            byte[] data = Convert.FromBase64String(rawContent.Replace('-', '+').Replace('_', '/'));
+            string decodedString = Encoding.UTF8.GetString(data);
+
+            var pattern = @"html%3Fml=([^=]+)";
+            var match = Regex.Match(decodedString, pattern);
+
+            if (match.Success)
+            {
+                return match.Groups[1].Value;
+            }
+            else
+            {
+                Console.WriteLine("Magic link code not found in the email content");
                 return null;
             }
         }
 
         private static async Task<string?> SigninWithCode(HttpClient client, Config config, string token, string code, string email)
         {
-            const int maxAttempts = 3;
+            const int maxAttempts = 2;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
                 try
                 {
+                    Console.WriteLine($"Attempt {attempt} to sign in for {email}");
+
+                    token = await GetAccessToken(client, config);
+                    if (string.IsNullOrEmpty(token))
+                    {
+                        Console.WriteLine($"Failed to refresh token for {email}");
+                        continue;
+                    }
+
                     var result = await SigninWithCodeAttempt(client, config, token, code);
                     if (!string.IsNullOrEmpty(result))
                     {
                         return result;
                     }
+                    else
+                    {
+                        Console.WriteLine($"Signin attempt {attempt} for {email} returned null result");
+                    }
+                }
+                catch (HttpRequestException ex)
+                {
+                    Console.WriteLine($"HTTP error during signin attempt {attempt} for {email}: {ex.Message}");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Attempt {attempt} failed for {email}: {ex.Message}");
+                    Console.WriteLine($"Unexpected error during signin attempt {attempt} for {email}: {ex.Message}");
                 }
 
                 if (attempt < maxAttempts)
                 {
-                    int delay = attempt * 2000;
+                    int delay = (int)Math.Pow(2, attempt) * SIGNIN_RETRY_BASE_DELAY;
                     Console.WriteLine($"Retrying signin for {email} in {delay}ms...");
                     await Task.Delay(delay);
                 }
@@ -380,7 +493,11 @@
             request.Headers.Add("mcd-uuid", Guid.NewGuid().ToString());
             request.Headers.Add("mcd-marketid", config.McdMarketId);
 
+            Console.WriteLine($"Sending sign-in request to: {url}");
+
             var response = await client.SendAsync(request);
+
+            Console.WriteLine($"Response status code: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
             {
@@ -394,6 +511,7 @@
                 return null;
             }
         }
+
 
         private static async Task<OfferResponse> FetchOffers(HttpClient client, Config config, string token)
         {
