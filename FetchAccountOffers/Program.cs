@@ -15,18 +15,23 @@
 
     class Program
     {
-        private const int MAGIC_LINK_WAIT_DELAY = 12000;
-        private const int SIGNIN_RETRY_BASE_DELAY = 2500;
-        private const int API_SEMAPHORE_COUNT = 5;
+        private const int MAGIC_LINK_WAIT_DELAY = 10000;
+        private const int SIGNIN_RETRY_BASE_DELAY = 5000;
+        private const int API_SEMAPHORE_COUNT = 4;
 
         static async Task Main(string[] args)
         {
             Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
-                .WriteTo.Console()
-                .WriteTo.File("logs/log-.txt", rollingInterval: RollingInterval.Day)
-                .Enrich.FromLogContext()
-                .CreateLogger();
+            .MinimumLevel.Debug()
+            .WriteTo.Console()
+            .WriteTo.File(
+                path: $"logs/log_{DateTime.Now:yyyyMMdd_HHmmss}.txt",
+                rollingInterval: RollingInterval.Infinite,
+                fileSizeLimitBytes: null,
+                retainedFileCountLimit: null
+            )
+            .Enrich.FromLogContext()
+            .CreateLogger();
 
             try
             {
@@ -324,7 +329,7 @@
                 var query = $"from:accounts@au.mcdonalds.com to:{alias}";
                 var listRequest = service.Users.Messages.List("me");
                 listRequest.Q = query;
-                listRequest.MaxResults = 20;
+                listRequest.MaxResults = 1;
 
                 var response = await listRequest.ExecuteAsync();
                 if (response.Messages == null || response.Messages.Count == 0)
@@ -366,8 +371,12 @@
 
                 if (latestCode != null && latestEmailId != null)
                 {
-                    Log.Information("Using magic link for {Alias} from {LatestEmailTime}", alias, latestEmailTime);
-                    await DeleteEmail(service, latestEmailId);
+                    Log.Information("Found valid magic link for {Alias}", alias);
+                    var deleteResult = await DeleteEmail(service, latestEmailId);
+                    if (!deleteResult)
+                    {
+                        Log.Warning("Failed to delete email for {Alias}", alias);
+                    }
                     return latestCode;
                 }
                 else
@@ -383,22 +392,23 @@
             }
         }
 
-        private static async Task DeleteEmail(GmailService service, string emailId)
+        private static async Task<bool> DeleteEmail(GmailService service, string emailId)
         {
             try
             {
                 await service.Users.Messages.Trash("me", emailId).ExecuteAsync();
                 Log.Information("Successfully deleted email with ID: {EmailId}", emailId);
+                return true;
             }
             catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.Forbidden)
             {
                 Log.Error("Error: Insufficient permissions to delete the email. Please check Gmail API scopes.");
-                Log.Information("Continuing without deleting the email.");
+                return false;
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "Unexpected error deleting email");
-                Log.Information("Continuing without deleting the email.");
+                return false;
             }
         }
 
@@ -447,6 +457,7 @@
                     var result = await SigninWithCodeAttempt(client, config, token, code);
                     if (!string.IsNullOrEmpty(result))
                     {
+                        Log.Information("Successfully signed in for {Email}", email);
                         return result;
                     }
                     else
@@ -516,12 +527,26 @@
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
-                var signinResponse = JsonSerializer.Deserialize<SigninResponse>(responseContent);
-                return signinResponse?.Response?.AccessToken;
+                Log.Information("Response content: {Content}", responseContent);
+                try
+                {
+                    var signinResponse = JsonSerializer.Deserialize<SigninResponse>(responseContent);
+                    if (signinResponse?.Response?.AccessToken == null)
+                    {
+                        Log.Warning("AccessToken is null in the response");
+                    }
+                    return signinResponse?.Response?.AccessToken;
+                }
+                catch (JsonException ex)
+                {
+                    Log.Error(ex, "Failed to deserialize SigninResponse");
+                    return null;
+                }
             }
             else
             {
-                Log.Error("Failed to sign in: {StatusCode}", response.StatusCode);
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Log.Error("Failed to sign in: {StatusCode}. Error content: {ErrorContent}", response.StatusCode, errorContent);
                 return null;
             }
         }
