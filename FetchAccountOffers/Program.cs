@@ -1,16 +1,18 @@
 ﻿namespace MyMaccasOffersFetcher
 {
     using FetchAccountOffers;
-    using Google.Apis.Auth.OAuth2;
-    using Google.Apis.Gmail.v1;
-    using Google.Apis.Services;
-    using Google.Apis.Util;
-    using Google.Apis.Util.Store;
     using System.Text;
     using System.Text.Json;
     using System.Text.RegularExpressions;
     using System.Diagnostics;
+    using Google.Apis.Auth.OAuth2;
+    using Google.Apis.Gmail.v1;
     using Google.Apis.Gmail.v1.Data;
+    using Google.Apis.Services;
+    using Google.Apis.Util;
+    using Google.Apis.Util.Store;
+    using Serilog;
+    using Serilog.Events;
 
     class Program
     {
@@ -19,75 +21,89 @@
 
         static async Task Main(string[] args)
         {
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .WriteTo.Console()
+                .WriteTo.File("logs/log-.txt", rollingInterval: RollingInterval.Day)
+                .Enrich.FromLogContext()
+                .CreateLogger();
+
+            try
+            {
+                await RunApp(args);
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal(ex, "Application terminated unexpectedly");
+            }
+            finally
+            {
+                Log.CloseAndFlush();
+            }
+        }
+
+        static async Task RunApp(string[] args)
+        {
             var stopwatch = Stopwatch.StartNew();
             var failedAccounts = new HashSet<string>();
 
-            string logFilename = GetTimestampedFilename();
-
-            using (var writer = new ConsoleAndFileWriter(logFilename))
+            try
             {
-                Console.SetOut(writer);
+                Log.Information("Application started at {StartTime}", DateTime.Now);
+                Log.Information("Current delay settings:");
+                Log.Information("MAGIC_LINK_WAIT_DELAY: {MagicLinkWaitDelay}ms", MAGIC_LINK_WAIT_DELAY);
+                Log.Information("SIGNIN_RETRY_BASE_DELAY: {SigninRetryBaseDelay}ms", SIGNIN_RETRY_BASE_DELAY);
 
-                try
+                var config = ConfigLoader.LoadConfig();
+                var credential = await GetOrRefreshCredential(config);
+                var gmailService = new GmailService(new BaseClientService.Initializer()
                 {
-                    Console.WriteLine($"Application started at {DateTime.Now}");
-                    Console.WriteLine("\nCurrent delay settings:");
-                    Console.WriteLine($"MAGIC_LINK_WAIT_DELAY: {MAGIC_LINK_WAIT_DELAY}ms");
-                    Console.WriteLine($"SIGNIN_RETRY_BASE_DELAY: {SIGNIN_RETRY_BASE_DELAY}ms");
-                    Console.WriteLine();
+                    HttpClientInitializer = credential,
+                    ApplicationName = "MyMaccasOffersFetcher",
+                });
+                Log.Information("Configuration loaded successfully.");
 
-                    var config = ConfigLoader.LoadConfig();
-                    var credential = await GetOrRefreshCredential(config);
-                    var gmailService = new GmailService(new BaseClientService.Initializer()
-                    {
-                        HttpClientInitializer = credential,
-                        ApplicationName = "MyMaccasOffersFetcher",
-                    });
-                    Console.WriteLine("Configuration loaded successfully.");
+                using var client = new HttpClient();
+                Log.Information("HTTP client initialized.");
 
-                    using var client = new HttpClient();
-                    Console.WriteLine("HTTP client initialized.");
+                var results = await ProcessEmails(config, client, failedAccounts);
 
-                    var results = await ProcessEmails(config, client, failedAccounts);
+                Log.Information("All emails processed.");
 
-                    Console.WriteLine("\nAll emails processed.");
-
-                    foreach (var (email, offers) in results)
-                    {
-                        if (offers != null)
-                        {
-                            DisplayOffersForAccount(email, offers);
-                        }
-                        else
-                        {
-                            Console.WriteLine($"No offers found for {email}");
-                        }
-                    }
-                }
-                catch (Exception ex)
+                foreach (var (email, offers) in results)
                 {
-                    Console.WriteLine($"An error occurred: {ex.Message}");
-                    Console.WriteLine($"Stack Trace: {ex.StackTrace}");
-                }
-                finally
-                {
-                    stopwatch.Stop();
-                    Console.WriteLine($"\nApplication ended at {DateTime.Now}");
-                    Console.WriteLine($"Total execution time: {stopwatch.Elapsed}");
-
-                    Console.WriteLine("\nSummary of failed accounts:");
-                    if (failedAccounts.Count > 0)
+                    if (offers != null)
                     {
-                        foreach (var account in failedAccounts)
-                        {
-                            Console.WriteLine(account);
-                        }
-                        Console.WriteLine($"\nTotal failed accounts: {failedAccounts.Count}");
+                        DisplayOffersForAccount(email, offers);
                     }
                     else
                     {
-                        Console.WriteLine("All accounts processed successfully.");
+                        Log.Warning("No offers found for {Email}", email);
                     }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "An error occurred");
+            }
+            finally
+            {
+                stopwatch.Stop();
+                Log.Information("Application ended at {EndTime}", DateTime.Now);
+                Log.Information("Total execution time: {ExecutionTime}", stopwatch.Elapsed);
+
+                Log.Information("Summary of failed accounts:");
+                if (failedAccounts.Count > 0)
+                {
+                    foreach (var account in failedAccounts)
+                    {
+                        Log.Warning("Failed account: {Account}", account);
+                    }
+                    Log.Warning("Total failed accounts: {FailedAccountsCount}", failedAccounts.Count);
+                }
+                else
+                {
+                    Log.Information("All accounts processed successfully.");
                 }
             }
         }
@@ -114,7 +130,7 @@
             await apiSemaphore.WaitAsync();
             try
             {
-                Console.WriteLine($"\nProcessing email: {email}");
+                Log.Information("Processing email: {Email}", email);
                 var gmailService = GetGmailService(config);
 
                 using var client = new HttpClient();
@@ -123,19 +139,19 @@
 
                 if (string.IsNullOrEmpty(accessToken))
                 {
-                    Console.WriteLine($"No token retrieved for {email}. Skipping.");
+                    Log.Warning("No token retrieved for {Email}. Skipping.", email);
                     failedAccounts.Add(email);
                     return (email, (OfferResponse)null);
                 }
 
                 var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
-                Console.WriteLine($"Magic link login request sent for {email}.");
+                Log.Information("Magic link login request sent for {Email}.", email);
 
-                Console.WriteLine($"Waiting for magic link email for {email}...");
+                Log.Information("Waiting for magic link email for {Email}...", email);
                 var code = await GetLatestMagicLinkCode(gmailService, email);
                 if (string.IsNullOrEmpty(code))
                 {
-                    Console.WriteLine($"Failed to get magic link code for {email}. Skipping.");
+                    Log.Error("Failed to get magic link code for {Email}. Skipping.", email);
                     failedAccounts.Add(email);
                     return (email, (OfferResponse)null);
                 }
@@ -143,15 +159,15 @@
                 var newAccessToken = await SigninWithCode(client, config, accessToken, code, email);
                 if (string.IsNullOrEmpty(newAccessToken))
                 {
-                    Console.WriteLine($"Failed to sign in with the magic link code for {email}.");
+                    Log.Error("Failed to sign in with the magic link code for {Email}.", email);
                     failedAccounts.Add(email);
                     return (email, (OfferResponse)null);
                 }
 
-                Console.WriteLine($"Successfully signed in with magic link code for {email}.");
+                Log.Information("Successfully signed in with magic link code for {Email}.", email);
 
                 var offers = await FetchOffers(client, config, newAccessToken);
-                Console.WriteLine($"Finished processing email: {email}");
+                Log.Information("Finished processing email: {Email}", email);
 
                 return (email, offers);
             }
@@ -159,7 +175,6 @@
             {
                 apiSemaphore.Release();
             }
-            
         }
 
         private static string GetTimestampedFilename()
@@ -208,13 +223,13 @@
                 }
                 else
                 {
-                    Console.WriteLine($"Failed to retrieve token. Status code: {response.StatusCode}");
+                    Log.Error("Failed to retrieve token. Status code: {StatusCode}", response.StatusCode);
                     return null;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Exception occurred while retrieving token: {ex.Message}");
+                Log.Error(ex, "Exception occurred while retrieving token");
                 return null;
             }
         }
@@ -314,7 +329,7 @@
                 var response = await listRequest.ExecuteAsync();
                 if (response.Messages == null || response.Messages.Count == 0)
                 {
-                    Console.WriteLine($"No emails found for {alias}");
+                    Log.Warning("No emails found for {Alias}", alias);
                     return null;
                 }
 
@@ -332,7 +347,7 @@
 
                     if (emailTime < cutoffTime)
                     {
-                        Console.WriteLine($"Skipping old email for {alias} from {emailTime}");
+                        Log.Debug("Skipping old email for {Alias} from {EmailTime}", alias, emailTime);
                         continue;
                     }
 
@@ -344,27 +359,26 @@
                             latestCode = code;
                             latestEmailTime = emailTime;
                             latestEmailId = messageData.Id;
-                            Console.WriteLine($"Found newer magic link for {alias} from {latestEmailTime}");
+                            Log.Debug("Found newer magic link for {Alias} from {LatestEmailTime}", alias, latestEmailTime);
                         }
                     }
                 }
 
                 if (latestCode != null && latestEmailId != null)
                 {
-                    Console.WriteLine($"Using magic link for {alias} from {latestEmailTime}");
+                    Log.Information("Using magic link for {Alias} from {LatestEmailTime}", alias, latestEmailTime);
                     await DeleteEmail(service, latestEmailId);
                     return latestCode;
                 }
                 else
                 {
-                    Console.WriteLine($"No valid recent magic link found for {alias}");
+                    Log.Warning("No valid recent magic link found for {Alias}", alias);
                     return null;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in GetLatestMagicLinkCode for {alias}: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                Log.Error(ex, "Error in GetLatestMagicLinkCode for {Alias}", alias);
                 return null;
             }
         }
@@ -374,17 +388,17 @@
             try
             {
                 await service.Users.Messages.Trash("me", emailId).ExecuteAsync();
-                Console.WriteLine($"Successfully deleted email with ID: {emailId}");
+                Log.Information("Successfully deleted email with ID: {EmailId}", emailId);
             }
             catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.Forbidden)
             {
-                Console.WriteLine("Error: Insufficient permissions to delete the email. Please check Gmail API scopes.");
-                Console.WriteLine("Continuing without deleting the email.");
+                Log.Error("Error: Insufficient permissions to delete the email. Please check Gmail API scopes.");
+                Log.Information("Continuing without deleting the email.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unexpected error deleting email: {ex.Message}");
-                Console.WriteLine("Continuing without deleting the email.");
+                Log.Error(ex, "Unexpected error deleting email");
+                Log.Information("Continuing without deleting the email.");
             }
         }
 
@@ -392,7 +406,7 @@
         {
             if (message.Payload?.Body?.Data == null)
             {
-                Console.WriteLine("Email body is empty or null");
+                Log.Warning("Email body is empty or null");
                 return null;
             }
 
@@ -409,7 +423,7 @@
             }
             else
             {
-                Console.WriteLine("Magic link code not found in the email content");
+                Log.Warning("Magic link code not found in the email content");
                 return null;
             }
         }
@@ -421,12 +435,12 @@
             {
                 try
                 {
-                    Console.WriteLine($"Attempt {attempt} to sign in for {email}");
+                    Log.Information("Attempt {Attempt} to sign in for {Email}", attempt, email);
 
                     token = await GetAccessToken(client, config);
                     if (string.IsNullOrEmpty(token))
                     {
-                        Console.WriteLine($"Failed to refresh token for {email}");
+                        Log.Warning("Failed to refresh token for {Email}", email);
                         continue;
                     }
 
@@ -437,27 +451,27 @@
                     }
                     else
                     {
-                        Console.WriteLine($"Signin attempt {attempt} for {email} returned null result");
+                        Log.Warning("Signin attempt {Attempt} for {Email} returned null result", attempt, email);
                     }
                 }
                 catch (HttpRequestException ex)
                 {
-                    Console.WriteLine($"HTTP error during signin attempt {attempt} for {email}: {ex.Message}");
+                    Log.Error(ex, "HTTP error during signin attempt {Attempt} for {Email}", attempt, email);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Unexpected error during signin attempt {attempt} for {email}: {ex.Message}");
+                    Log.Error(ex, "Unexpected error during signin attempt {Attempt} for {Email}", attempt, email);
                 }
 
                 if (attempt < maxAttempts)
                 {
                     int delay = (int)Math.Pow(2, attempt) * SIGNIN_RETRY_BASE_DELAY;
-                    Console.WriteLine($"Retrying signin for {email} in {delay}ms...");
+                    Log.Information("Retrying signin for {Email} in {Delay}ms...", email, delay);
                     await Task.Delay(delay);
                 }
             }
 
-            Console.WriteLine($"Failed to sign in after {maxAttempts} attempts for {email}.");
+            Log.Error("Failed to sign in after {MaxAttempts} attempts for {Email}.", maxAttempts, email);
             return null;
         }
 
@@ -493,11 +507,11 @@
             request.Headers.Add("mcd-uuid", Guid.NewGuid().ToString());
             request.Headers.Add("mcd-marketid", config.McdMarketId);
 
-            Console.WriteLine($"Sending sign-in request to: {url}");
+            Log.Information("Sending sign-in request to: {Url}", url);
 
             var response = await client.SendAsync(request);
 
-            Console.WriteLine($"Response status code: {response.StatusCode}");
+            Log.Information("Response status code: {StatusCode}", response.StatusCode);
 
             if (response.IsSuccessStatusCode)
             {
@@ -507,7 +521,7 @@
             }
             else
             {
-                Console.WriteLine($"Failed to sign in: {response.StatusCode}");
+                Log.Error("Failed to sign in: {StatusCode}", response.StatusCode);
                 return null;
             }
         }
@@ -535,7 +549,7 @@
             }
             else
             {
-                Console.WriteLine($"Failed to fetch offers: {response.StatusCode}");
+                Log.Error("Failed to fetch offers: {StatusCode}", response.StatusCode);
                 return null;
             }
         }
