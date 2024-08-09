@@ -12,12 +12,12 @@
     using Google.Apis.Util;
     using Google.Apis.Util.Store;
     using Serilog;
-    using Serilog.Events;
 
     class Program
     {
         private const int MAGIC_LINK_WAIT_DELAY = 12000;
         private const int SIGNIN_RETRY_BASE_DELAY = 2500;
+        private const int API_SEMAPHORE_COUNT = 5;
 
         static async Task Main(string[] args)
         {
@@ -123,7 +123,7 @@
             return results;
         }
 
-        private static SemaphoreSlim apiSemaphore = new SemaphoreSlim(6, 6);
+        private static SemaphoreSlim apiSemaphore = new SemaphoreSlim(API_SEMAPHORE_COUNT, API_SEMAPHORE_COUNT);
 
         private static async Task<(string Email, OfferResponse Offers)> ProcessSingleEmail(string email, Config config, HttpClient clientFactory, HashSet<string> failedAccounts)
         {
@@ -556,36 +556,29 @@
 
         private static void DisplayOffersForAccount(string email, OfferResponse offers)
         {
-            var separator = new string('=', 80);
-            var output = new StringBuilder();
-            output.AppendLine(separator);
-            output.AppendLine($"Offers for account: {email}");
-            output.AppendLine(separator);
-            output.AppendLine();
+            var separator = new string('-', 40);
+            Log.Information("{Separator}", separator);
+            Log.Information("Offers for account: {Email}", email);
+            Log.Information("{Separator}", separator);
 
             if (offers?.Response?.Offers != null && offers.Response.Offers.Any())
             {
-                for (int i = 0; i < offers.Response.Offers.Count; i++)
+                foreach (var offer in offers.Response.Offers)
                 {
-                    var offer = offers.Response.Offers[i];
-                    output.AppendLine($"Offer #{i + 1}:");
-                    output.AppendLine($"  Name: {offer.Name ?? "N/A"}");
-                    output.AppendLine($"  Description: {offer.ShortDescription ?? "N/A"}");
-                    output.AppendLine($"  Valid From: {offer.LocalValidFrom ?? "N/A"}");
-                    output.AppendLine($"  Valid To: {offer.LocalValidTo ?? "N/A"}");
-                    output.AppendLine();
+                    Log.Information("{OfferName}", offer.Name);
+                    Log.Information("Description: {OfferDescription}", offer.ShortDescription);
+                    Log.Information("Valid: {ValidFrom} to {ValidTo}",
+                        offer.LocalValidFrom,
+                        offer.LocalValidTo);
+                    Log.Information("{Separator}", separator);
                 }
             }
             else
             {
-                output.AppendLine("No offers found or invalid data structure.");
+                Log.Warning("No offers found for {Email}", email);
             }
 
-            output.AppendLine(separator);
-            output.AppendLine();
-
-            Console.WriteLine(output.ToString());
-            File.AppendAllText("offers_output.txt", output.ToString());
+            Log.Information("");
         }
     }
 }
