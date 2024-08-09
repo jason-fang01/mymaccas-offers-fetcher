@@ -15,7 +15,7 @@
 
     class Program
     {
-        private const int MAGIC_LINK_WAIT_DELAY = 10000;
+        private const int MAGIC_LINK_WAIT_DELAY = 15000;
         private const int SIGNIN_RETRY_BASE_DELAY = 5000;
         private const int API_SEMAPHORE_COUNT = 4;
 
@@ -83,7 +83,7 @@
                     }
                     else
                     {
-                        Log.Warning("No offers found for {Email}", email);
+                        Log.Warning("No offers found for {Email}", MaskEmail(email));
                     }
                 }
             }
@@ -135,7 +135,7 @@
             await apiSemaphore.WaitAsync();
             try
             {
-                Log.Information("Processing email: {Email}", email);
+                Log.Information("Processing email: {Email}", MaskEmail(email));
                 var gmailService = GetGmailService(config);
 
                 using var client = new HttpClient();
@@ -144,19 +144,19 @@
 
                 if (string.IsNullOrEmpty(accessToken))
                 {
-                    Log.Warning("No token retrieved for {Email}. Skipping.", email);
+                    Log.Warning("No token retrieved for {Email}. Skipping.", MaskEmail(email));
                     failedAccounts.Add(email);
                     return (email, (OfferResponse)null);
                 }
 
                 var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
-                Log.Information("Magic link login request sent for {Email}.", email);
+                Log.Information("Magic link login request sent for {Email}.", MaskEmail(email));
 
-                Log.Information("Waiting for magic link email for {Email}...", email);
+                Log.Information("Waiting for magic link email for {Email}...", MaskEmail(email));
                 var code = await GetLatestMagicLinkCode(gmailService, email);
                 if (string.IsNullOrEmpty(code))
                 {
-                    Log.Error("Failed to get magic link code for {Email}. Skipping.", email);
+                    Log.Error("Failed to get magic link code for {Email}. Skipping.", MaskEmail(email));
                     failedAccounts.Add(email);
                     return (email, (OfferResponse)null);
                 }
@@ -164,15 +164,15 @@
                 var newAccessToken = await SigninWithCode(client, config, accessToken, code, email);
                 if (string.IsNullOrEmpty(newAccessToken))
                 {
-                    Log.Error("Failed to sign in with the magic link code for {Email}.", email);
+                    Log.Error("Failed to sign in with the magic link code for {Email}.", MaskEmail(email));
                     failedAccounts.Add(email);
                     return (email, (OfferResponse)null);
                 }
 
-                Log.Information("Successfully signed in with magic link code for {Email}.", email);
+                Log.Information("Successfully signed in with magic link code for {Email}.", MaskEmail(email));
 
                 var offers = await FetchOffers(client, config, newAccessToken);
-                Log.Information("Finished processing email: {Email}", email);
+                Log.Information("Finished processing email: {Email}", MaskEmail(email));
 
                 return (email, offers);
             }
@@ -329,7 +329,7 @@
                 var query = $"from:accounts@au.mcdonalds.com to:{alias}";
                 var listRequest = service.Users.Messages.List("me");
                 listRequest.Q = query;
-                listRequest.MaxResults = 1;
+                listRequest.MaxResults = 5;
 
                 var response = await listRequest.ExecuteAsync();
                 if (response.Messages == null || response.Messages.Count == 0)
@@ -445,44 +445,44 @@
             {
                 try
                 {
-                    Log.Information("Attempt {Attempt} to sign in for {Email}", attempt, email);
+                    Log.Information("Attempt {Attempt} to sign in for {Email}", attempt, MaskEmail(email));
 
                     token = await GetAccessToken(client, config);
                     if (string.IsNullOrEmpty(token))
                     {
-                        Log.Warning("Failed to refresh token for {Email}", email);
+                        Log.Warning("Failed to refresh token for {Email}", MaskEmail(email));
                         continue;
                     }
 
                     var result = await SigninWithCodeAttempt(client, config, token, code);
                     if (!string.IsNullOrEmpty(result))
                     {
-                        Log.Information("Successfully signed in for {Email}", email);
+                        Log.Information("Successfully signed in for {Email}", MaskEmail(email));
                         return result;
                     }
                     else
                     {
-                        Log.Warning("Signin attempt {Attempt} for {Email} returned null result", attempt, email);
+                        Log.Warning("Signin attempt {Attempt} for {Email} returned null result", attempt, MaskEmail(email));
                     }
                 }
                 catch (HttpRequestException ex)
                 {
-                    Log.Error(ex, "HTTP error during signin attempt {Attempt} for {Email}", attempt, email);
+                    Log.Error(ex, "HTTP error during signin attempt {Attempt} for {Email}", attempt, MaskEmail(email));
                 }
                 catch (Exception ex)
                 {
-                    Log.Error(ex, "Unexpected error during signin attempt {Attempt} for {Email}", attempt, email);
+                    Log.Error(ex, "Unexpected error during signin attempt {Attempt} for {Email}", attempt, MaskEmail(email));
                 }
 
                 if (attempt < maxAttempts)
                 {
                     int delay = (int)Math.Pow(2, attempt) * SIGNIN_RETRY_BASE_DELAY;
-                    Log.Information("Retrying signin for {Email} in {Delay}ms...", email, delay);
+                    Log.Information("Retrying signin for {Email} in {Delay}ms...", MaskEmail(email), delay);
                     await Task.Delay(delay);
                 }
             }
 
-            Log.Error("Failed to sign in after {MaxAttempts} attempts for {Email}.", maxAttempts, email);
+            Log.Error("Failed to sign in after {MaxAttempts} attempts for {Email}.", maxAttempts, MaskEmail(email));
             return null;
         }
 
@@ -583,7 +583,7 @@
         {
             var separator = new string('-', 40);
             Log.Information("{Separator}", separator);
-            Log.Information("Offers for account: {Email}", email);
+            Log.Information("Offers for account: {Email}", MaskEmail(email));
             Log.Information("{Separator}", separator);
 
             if (offers?.Response?.Offers != null && offers.Response.Offers.Any())
@@ -600,10 +600,27 @@
             }
             else
             {
-                Log.Warning("No offers found for {Email}", email);
+                Log.Warning("No offers found for {Email}", MaskEmail(email));
             }
 
             Log.Information("");
+        }
+
+        private static string MaskEmail(string email)
+        {
+            if (string.IsNullOrEmpty(email) || email.Length <= 6)
+                return email;
+
+            var atIndex = email.IndexOf('@');
+            if (atIndex == -1 || atIndex <= 3)
+                return email;
+
+            var localPart = email.Substring(0, atIndex);
+            var domain = email.Substring(atIndex);
+
+            var maskedLocalPart = localPart.Substring(0, 3) + new string('*', localPart.Length - 6) + localPart.Substring(localPart.Length - 3);
+
+            return maskedLocalPart + domain;
         }
     }
 }
