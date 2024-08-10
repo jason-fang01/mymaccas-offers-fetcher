@@ -55,9 +55,12 @@
             try
             {
                 Log.Information("Application started at {StartTime}", DateTime.Now);
+                Log.Information("");
                 Log.Information("Current delay settings:");
                 Log.Information("MAGIC_LINK_WAIT_DELAY: {MagicLinkWaitDelay}ms", MAGIC_LINK_WAIT_DELAY);
                 Log.Information("SIGNIN_RETRY_BASE_DELAY: {SigninRetryBaseDelay}ms", SIGNIN_RETRY_BASE_DELAY);
+                Log.Information("API_SEMAPHORE_COUNT: {ApiSemaphoreCount}", API_SEMAPHORE_COUNT);
+                Log.Information("");
 
                 var config = ConfigLoader.LoadConfig();
                 var credential = await GetOrRefreshCredential(config);
@@ -70,10 +73,12 @@
 
                 using var client = new HttpClient();
                 Log.Information("HTTP client initialized.");
+                Log.Information("");
 
                 var results = await ProcessEmails(config, client, failedAccounts);
 
                 Log.Information("All emails processed.");
+                Log.Information("");
 
                 foreach (var (email, offers, loyaltyPoints) in results)
                 {
@@ -87,6 +92,7 @@
                     {
                         Log.Warning("No offers found for {Email}", MaskEmail(email));
                     }
+                    Log.Information("");
                 }
             }
             catch (Exception ex)
@@ -95,10 +101,6 @@
             }
             finally
             {
-                stopwatch.Stop();
-                Log.Information("Application ended at {EndTime}", DateTime.Now);
-                Log.Information("Total execution time: {ExecutionTime}", stopwatch.Elapsed);
-
                 Log.Information("Summary of failed accounts:");
                 if (failedAccounts.Count > 0)
                 {
@@ -112,6 +114,11 @@
                 {
                     Log.Information("All accounts processed successfully.");
                 }
+
+                stopwatch.Stop();
+                Log.Information("");
+                Log.Information("Application ended at {EndTime}", DateTime.Now);
+                Log.Information("Total execution time: {ExecutionTime}", stopwatch.Elapsed);
             }
         }
 
@@ -175,6 +182,7 @@
 
                 var offers = await FetchOffers(client, config, newAccessToken);
                 var loyaltyPoints = await FetchLoyaltyPoints(client, config, newAccessToken);
+                Log.Information("");
                 Log.Information("Finished processing email: {Email}", MaskEmail(email));
 
                 return (email, offers, loyaltyPoints);
@@ -584,20 +592,21 @@
 
         private static void DisplayOffersForAccount(string email, OfferResponse offers)
         {
-            var separator = new string('-', 40);
+            var separator = new string('-', 80);
             Log.Information("Offers:");
 
             if (offers?.Response?.Offers != null && offers.Response.Offers.Any())
             {
                 foreach (var offer in offers.Response.Offers)
                 {
+                    Log.Information(separator);
                     Log.Information("{OfferName}", offer.Name);
-                    Log.Information("Description: {OfferDescription}", offer.ShortDescription);
+                    Log.Information("{Description}", FormatDescription(offer.ShortDescription, 80));
                     Log.Information("Valid: {ValidFrom} to {ValidTo}",
                         offer.LocalValidFrom,
                         offer.LocalValidTo);
-                    Log.Information("{Separator}", separator);
                 }
+                Log.Information(separator);
             }
             else
             {
@@ -652,6 +661,34 @@
 
             Log.Information("{Separator}", separator);
             Log.Information("");
+        }
+
+        private static string FormatDescription(string description, int maxLineLength)
+        {
+            if (string.IsNullOrEmpty(description)) return string.Empty;
+
+            var words = description.Split(' ');
+            var lines = new List<string>();
+            var currentLine = new System.Text.StringBuilder();
+
+            foreach (var word in words)
+            {
+                if (currentLine.Length + word.Length + 1 > maxLineLength)
+                {
+                    if (currentLine.Length > 0)
+                    {
+                        lines.Add(currentLine.ToString());
+                        currentLine.Clear();
+                    }
+                }
+
+                if (currentLine.Length > 0) currentLine.Append(' ');
+                currentLine.Append(word);
+            }
+
+            if (currentLine.Length > 0) lines.Add(currentLine.ToString());
+
+            return string.Join(Environment.NewLine, lines);
         }
 
         private static string MaskEmail(string email)
