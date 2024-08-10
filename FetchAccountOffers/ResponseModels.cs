@@ -41,6 +41,21 @@
         public string LocalValidTo { get; set; }
     }
 
+    public class LoyaltyPointsResponse
+    {
+        [JsonPropertyName("response")]
+        public LoyaltyPointsData Response { get; set; }
+    }
+
+    public class LoyaltyPointsData
+    {
+        [JsonPropertyName("totalPoints")]
+        public int TotalPoints { get; set; }
+
+        [JsonPropertyName("lifeTimePoints")]
+        public int LifeTimePoints { get; set; }
+    }
+
     public class TokenResponse
     {
         [JsonPropertyName("status")]

@@ -75,8 +75,10 @@
 
                 Log.Information("All emails processed.");
 
-                foreach (var (email, offers) in results)
+                foreach (var (email, offers, loyaltyPoints) in results)
                 {
+                    DisplayLoyaltyPoints(email, loyaltyPoints);
+
                     if (offers != null)
                     {
                         DisplayOffersForAccount(email, offers);
@@ -113,9 +115,9 @@
             }
         }
 
-        private static async Task<List<(string Email, OfferResponse Offers)>> ProcessEmails(Config config, HttpClient client, HashSet<string> failedAccounts)
+        private static async Task<List<(string Email, OfferResponse Offers, LoyaltyPointsResponse LoyaltyPoints)>> ProcessEmails(Config config, HttpClient client, HashSet<string> failedAccounts)
         {
-            var results = new List<(string Email, OfferResponse Offers)>();
+            var results = new List<(string Email, OfferResponse Offers, LoyaltyPointsResponse LoyaltyPoints)>();
             var tasks = config.EmailAliases.Select(email => ProcessSingleEmail(email, config, client, failedAccounts)).ToList();
 
             while (tasks.Any())
@@ -130,7 +132,7 @@
 
         private static SemaphoreSlim apiSemaphore = new SemaphoreSlim(API_SEMAPHORE_COUNT, API_SEMAPHORE_COUNT);
 
-        private static async Task<(string Email, OfferResponse Offers)> ProcessSingleEmail(string email, Config config, HttpClient clientFactory, HashSet<string> failedAccounts)
+        private static async Task<(string Email, OfferResponse Offers, LoyaltyPointsResponse LoyaltyPoints)> ProcessSingleEmail(string email, Config config, HttpClient clientFactory, HashSet<string> failedAccounts)
         {
             await apiSemaphore.WaitAsync();
             try
@@ -146,7 +148,7 @@
                 {
                     Log.Warning("No token retrieved for {Email}. Skipping.", MaskEmail(email));
                     failedAccounts.Add(email);
-                    return (email, (OfferResponse)null);
+                    return (email, null, null);
                 }
 
                 var sendMagicLinkResult = await SendMagicLinkLogin(client, config, accessToken, email);
@@ -158,7 +160,7 @@
                 {
                     Log.Error("Failed to get magic link code for {Email}. Skipping.", MaskEmail(email));
                     failedAccounts.Add(email);
-                    return (email, (OfferResponse)null);
+                    return (email, null, null);
                 }
 
                 var newAccessToken = await SigninWithCode(client, config, accessToken, code, email);
@@ -166,15 +168,16 @@
                 {
                     Log.Error("Failed to sign in with the magic link code for {Email}.", MaskEmail(email));
                     failedAccounts.Add(email);
-                    return (email, (OfferResponse)null);
+                    return (email, null, null);
                 }
 
                 Log.Information("Successfully signed in with magic link code for {Email}.", MaskEmail(email));
 
                 var offers = await FetchOffers(client, config, newAccessToken);
+                var loyaltyPoints = await FetchLoyaltyPoints(client, config, newAccessToken);
                 Log.Information("Finished processing email: {Email}", MaskEmail(email));
 
-                return (email, offers);
+                return (email, offers, loyaltyPoints);
             }
             finally
             {
@@ -582,9 +585,7 @@
         private static void DisplayOffersForAccount(string email, OfferResponse offers)
         {
             var separator = new string('-', 40);
-            Log.Information("{Separator}", separator);
-            Log.Information("Offers for account: {Email}", MaskEmail(email));
-            Log.Information("{Separator}", separator);
+            Log.Information("Offers:");
 
             if (offers?.Response?.Offers != null && offers.Response.Offers.Any())
             {
@@ -603,6 +604,53 @@
                 Log.Warning("No offers found for {Email}", MaskEmail(email));
             }
 
+            Log.Information("");
+        }
+
+        private static async Task<LoyaltyPointsResponse> FetchLoyaltyPoints(HttpClient client, Config config, string token)
+        {
+            var url = config.LoyaltyPointsUrl;
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+            foreach (var header in config.CommonHeaders)
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+            var response = await client.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var jsonResponse = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<LoyaltyPointsResponse>(jsonResponse);
+            }
+            else
+            {
+                Log.Error("Failed to fetch loyalty points: {StatusCode}", response.StatusCode);
+                return null;
+            }
+        }
+
+        private static void DisplayLoyaltyPoints(string email, LoyaltyPointsResponse loyaltyPoints)
+        {
+            var separator = new string('-', 40);
+            Log.Information("{Separator}", separator);
+            Log.Information("Account: {Email}", MaskEmail(email));
+            Log.Information("{Separator}", separator);
+
+            if (loyaltyPoints?.Response != null)
+            {
+                Log.Information("Loyalty Points:");
+                Log.Information("  Total Points: {TotalPoints}", loyaltyPoints.Response.TotalPoints);
+                Log.Information("  Lifetime Points: {LifetimePoints}", loyaltyPoints.Response.LifeTimePoints);
+            }
+            else
+            {
+                Log.Warning("Failed to retrieve loyalty points for {Email}", MaskEmail(email));
+            }
+
+            Log.Information("{Separator}", separator);
             Log.Information("");
         }
 
