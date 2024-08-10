@@ -104,7 +104,7 @@
                 {
                     foreach (var account in failedAccounts)
                     {
-                        Log.Warning("Failed account: {Account}", account);
+                        Log.Warning("Failed account: {Account}", MaskEmail(account));
                     }
                     Log.Warning("Total failed accounts: {FailedAccountsCount}", failedAccounts.Count);
                 }
