@@ -1,6 +1,8 @@
 # Ignore build output directories
 bin/
 obj/
+logs/
+
 
 # Ignore Visual Studio files
 .vs/
@@ -8,3 +10,7 @@ obj/
 # Ignore sensitive configuration files
 config.json
 client_secret.json
+token.json
+
+# Other files
+.DS_Store
