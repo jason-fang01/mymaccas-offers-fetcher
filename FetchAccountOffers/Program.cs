@@ -345,7 +345,7 @@
                 var response = await listRequest.ExecuteAsync();
                 if (response.Messages == null || response.Messages.Count == 0)
                 {
-                    Log.Warning("No emails found for {Alias}", alias);
+                    Log.Warning("No emails found for {Alias}", MaskEmail(alias));
                     return null;
                 }
 
@@ -363,7 +363,7 @@
 
                     if (emailTime < cutoffTime)
                     {
-                        Log.Debug("Skipping old email for {Alias} from {EmailTime}", alias, emailTime);
+                        Log.Debug("Skipping old email for {Alias} from {EmailTime}", MaskEmail(alias), emailTime);
                         continue;
                     }
 
@@ -375,30 +375,30 @@
                             latestCode = code;
                             latestEmailTime = emailTime;
                             latestEmailId = messageData.Id;
-                            Log.Debug("Found newer magic link for {Alias} from {LatestEmailTime}", alias, latestEmailTime);
+                            Log.Debug("Found newer magic link for {Alias} from {LatestEmailTime}", MaskEmail(alias), latestEmailTime);
                         }
                     }
                 }
 
                 if (latestCode != null && latestEmailId != null)
                 {
-                    Log.Information("Found valid magic link for {Alias}", alias);
+                    Log.Information("Found valid magic link for {Alias}", MaskEmail(alias));
                     var deleteResult = await DeleteEmail(service, latestEmailId);
                     if (!deleteResult)
                     {
-                        Log.Warning("Failed to delete email for {Alias}", alias);
+                        Log.Warning("Failed to delete email for {Alias}", MaskEmail(alias));
                     }
                     return latestCode;
                 }
                 else
                 {
-                    Log.Warning("No valid recent magic link found for {Alias}", alias);
+                    Log.Warning("No valid recent magic link found for {Alias}", MaskEmail(alias));
                     return null;
                 }
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Error in GetLatestMagicLinkCode for {Alias}", alias);
+                Log.Error(ex, "Error in GetLatestMagicLinkCode for {Alias}", MaskEmail(alias));
                 return null;
             }
         }
